@@ -169,6 +169,8 @@ class MainActivity : AppCompatActivity() {
         }
         refreshOverlayStatus()
         refreshAutoStartStatus()
+        // 首次进入待机就把焦点给第一个按钮，遥控器上下键才能开始切换
+        checkUpdateButton.requestFocus()
         Timber.d("Standby UI visibility: ${standbyUi.visibility}")
         Timber.d("PlayerView visibility: ${playerView.visibility}")
     }
@@ -242,6 +244,8 @@ class MainActivity : AppCompatActivity() {
             if (mirrorSurface.visibility != View.VISIBLE) {
                 playerView.visibility = View.GONE
                 standbyUi.visibility = View.VISIBLE
+                // 回到待机就把焦点给第一个按钮，否则遥控器按键无处可去
+                checkUpdateButton.requestFocus()
             }
         }
     }
@@ -330,8 +334,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         Timber.d("onKeyDown: keyCode=$keyCode")
-        
-        // 电视遥控器完全控制
+
+        // 待机界面：方向键和确认键交给系统焦点导航，否则遥控器永远切不到按钮。
+        // 之前这里无条件把方向键当成快进/音量、确认键当成播放暂停吞掉，
+        // 加上没有任何按钮持有焦点，待机页的按钮就怎么按都没反应。
+        if (standbyUi.visibility == View.VISIBLE) {
+            if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                Timber.d("Minimizing app to background, service keeps running")
+                moveTaskToBack(true)
+                return true
+            }
+            return super.onKeyDown(keyCode, event)
+        }
+
+        // 电视遥控器完全控制（仅播放时）
         when (keyCode) {
             // 播放控制
             KeyEvent.KEYCODE_MEDIA_PLAY -> {
