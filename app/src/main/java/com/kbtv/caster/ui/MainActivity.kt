@@ -10,14 +10,19 @@ import android.os.IBinder
 import android.os.Looper
 import android.view.KeyEvent
 import android.view.View
+import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.kbtv.caster.BuildConfig
 import com.kbtv.caster.R
 import com.kbtv.caster.service.CastCoordinatorService
+import com.kbtv.caster.update.AppUpdate
 import timber.log.Timber
 
 /**
@@ -32,6 +37,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var mirrorSurface: android.view.SurfaceView
     private lateinit var standbyUi: View
     private lateinit var standbyStatus: TextView
+    private lateinit var versionText: TextView
+    private lateinit var checkUpdateButton: Button
     private lateinit var seekControlUi: View
     private lateinit var seekBar: SeekBar
     private lateinit var currentTime: TextView
@@ -77,6 +84,9 @@ class MainActivity : AppCompatActivity() {
 
         initViews()
         startAndBindService()
+        // Silent fork-update check on launch; only a new, not-yet-prompted
+        // version shows a dialog.
+        checkForUpdate(silent = true)
     }
 
     private fun initViews() {
@@ -105,6 +115,12 @@ class MainActivity : AppCompatActivity() {
 
         // 确保待机界面可见
         standbyStatus = findViewById(R.id.standbyStatus)
+
+        // Fork 版本与更新入口（待机页可见）
+        versionText = findViewById(R.id.versionText)
+        versionText.text = "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · fork 自动更新"
+        checkUpdateButton = findViewById(R.id.checkUpdateButton)
+        checkUpdateButton.setOnClickListener { checkForUpdate(silent = false) }
         Timber.d("Standby UI visibility: ${standbyUi.visibility}")
         Timber.d("PlayerView visibility: ${playerView.visibility}")
     }
@@ -402,6 +418,63 @@ class MainActivity : AppCompatActivity() {
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
         return String.format("%02d:%02d", minutes, seconds)
+    }
+
+    /** Fork 自动更新：查 fork 自身 Releases，静默检查只对未提示过的新版弹窗。 */
+    private fun checkForUpdate(silent: Boolean) {
+        Thread {
+            when (val result = AppUpdate.check()) {
+                is AppUpdate.CheckResult.UpToDate -> {
+                    if (!silent) {
+                        runOnUiThread {
+                            Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                is AppUpdate.CheckResult.Failed -> {
+                    Timber.d("Update check failed: ${result.message}")
+                    if (!silent) {
+                        runOnUiThread {
+                            Toast.makeText(this, "检查更新失败：${result.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                is AppUpdate.CheckResult.Available -> {
+                    if (silent && AppUpdate.wasPromptedFor(this, result.remoteVersionCode)) {
+                        return@Thread
+                    }
+                    runOnUiThread { showUpdateDialog(result) }
+                }
+            }
+        }.start()
+    }
+
+    private fun showUpdateDialog(result: AppUpdate.CheckResult.Available) {
+        val codeText = result.remoteVersionCode?.let { " ($it)" } ?: ""
+        AlertDialog.Builder(this)
+            .setTitle("发现新版本 ${result.remoteVersionName}$codeText")
+            .setMessage("来自 fork Releases，下载后可直接覆盖安装。")
+            .setPositiveButton("下载安装") { _, _ ->
+                AppUpdate.markPrompted(this, result.remoteVersionCode)
+                Toast.makeText(this, "正在下载更新…", Toast.LENGTH_SHORT).show()
+                Thread {
+                    val apk = AppUpdate.downloadApk(this, result.downloadUrl)
+                    runOnUiThread {
+                        if (apk == null) {
+                            Toast.makeText(this, "下载失败，请重试", Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+                        if (!AppUpdate.installApk(this, apk)) {
+                            Toast.makeText(this, "请先允许本应用安装未知应用", Toast.LENGTH_LONG).show()
+                            AppUpdate.openInstallPermissionSettings(this)
+                        }
+                    }
+                }.start()
+            }
+            .setNegativeButton("稍后") { _, _ ->
+                AppUpdate.markPrompted(this, result.remoteVersionCode)
+            }
+            .show()
     }
 
     override fun onDestroy() {
