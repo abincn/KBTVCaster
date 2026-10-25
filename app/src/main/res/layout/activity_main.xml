@@ -147,6 +147,9 @@
                 android:paddingBottom="8dp"
                 android:text="检查更新"
                 android:textSize="18sp"
+                android:background="@drawable/standby_button_background"
+                android:textColor="@color/standby_button_text"
+                app:backgroundTint="@null"
                 android:focusable="true"
                 android:nextFocusDown="@+id/overlayButton"
                 android:nextFocusUp="@+id/autoStartButton" />
@@ -178,6 +181,9 @@
                 android:paddingBottom="8dp"
                 android:text="去允许"
                 android:textSize="18sp"
+                android:background="@drawable/standby_button_background"
+                android:textColor="@color/standby_button_text"
+                app:backgroundTint="@null"
                 android:focusable="true"
                 android:nextFocusUp="@+id/checkUpdateButton"
                 android:nextFocusDown="@+id/autoStartButton" />
@@ -209,6 +215,9 @@
                 android:paddingBottom="8dp"
                 android:text="关闭开机自启"
                 android:textSize="18sp"
+                android:background="@drawable/standby_button_background"
+                android:textColor="@color/standby_button_text"
+                app:backgroundTint="@null"
                 android:focusable="true"
                 android:nextFocusUp="@+id/overlayButton"
                 android:nextFocusDown="@+id/checkUpdateButton" />
