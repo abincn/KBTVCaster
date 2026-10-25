@@ -118,6 +118,24 @@
             android:textColor="#FF9A9AA2"
             android:letterSpacing="0.04" />
 
+        <!-- Fork 版本与更新入口 -->
+        <TextView
+            android:id="@+id/versionText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textSize="18sp"
+            android:textColor="#FF9A9AA2" />
+
+        <Button
+            android:id="@+id/checkUpdateButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="检查更新"
+            android:textSize="20sp"
+            android:focusable="true" />
+
         <!-- 服务状态 -->
         <TextView
             android:id="@+id/standbyStatus"
