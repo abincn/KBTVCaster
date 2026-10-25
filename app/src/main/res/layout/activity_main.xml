@@ -74,13 +74,16 @@
 
     </LinearLayout>
 
-    <!-- 待机界面 -->
+    <!-- 待机界面：紧凑布局，整屏内容约 430dp 高，1080p 电视一屏放得下；
+         每组状态文案与按钮横排一行，不再上下堆叠 -->
     <LinearLayout
         android:id="@+id/standbyUi"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
         android:gravity="center"
+        android:paddingStart="48dp"
+        android:paddingEnd="48dp"
         android:background="@drawable/standby_background"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
@@ -89,8 +92,8 @@
 
         <!-- 投屏图标 -->
         <ImageView
-            android:layout_width="96dp"
-            android:layout_height="96dp"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
             android:src="@drawable/ic_cast_glyph"
             android:contentDescription="@string/app_name" />
 
@@ -98,9 +101,9 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="12dp"
             android:text="@string/tv_standby_title"
-            android:textSize="52sp"
+            android:textSize="40sp"
             android:textColor="#FFF4F4F6"
             android:letterSpacing="0.08"
             android:shadowColor="#80000000"
@@ -112,79 +115,118 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="8dp"
             android:text="@string/tv_standby_subtitle"
-            android:textSize="22sp"
+            android:textSize="18sp"
             android:textColor="#FF9A9AA2"
             android:letterSpacing="0.04" />
 
         <!-- Fork 版本与更新入口 -->
-        <TextView
-            android:id="@+id/versionText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:textSize="18sp"
-            android:textColor="#FF9A9AA2" />
-
-        <Button
-            android:id="@+id/checkUpdateButton"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="检查更新"
-            android:textSize="20sp"
-            android:focusable="true" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/versionText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="16sp"
+                android:textColor="#FF9A9AA2" />
+
+            <Button
+                android:id="@+id/checkUpdateButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:minHeight="40dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:text="检查更新"
+                android:textSize="18sp"
+                android:focusable="true"
+                android:nextFocusDown="@+id/overlayButton"
+                android:nextFocusUp="@+id/autoStartButton" />
+        </LinearLayout>
 
         <!-- Display over other apps -->
-        <TextView
-            android:id="@+id/overlayStatus"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:textSize="18sp"
-            android:textColor="#FF9A9AA2" />
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
 
-        <Button
-            android:id="@+id/overlayButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="去允许"
-            android:textSize="20sp"
-            android:focusable="true" />
+            <TextView
+                android:id="@+id/overlayStatus"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="16sp"
+                android:textColor="#FF9A9AA2" />
+
+            <Button
+                android:id="@+id/overlayButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:minHeight="40dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:text="去允许"
+                android:textSize="18sp"
+                android:focusable="true"
+                android:nextFocusUp="@+id/checkUpdateButton"
+                android:nextFocusDown="@+id/autoStartButton" />
+        </LinearLayout>
 
         <!-- Boot auto-start -->
-        <TextView
-            android:id="@+id/autoStartStatus"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:textSize="18sp"
-            android:textColor="#FF9A9AA2" />
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
 
-        <Button
-            android:id="@+id/autoStartButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="关闭开机自启"
-            android:textSize="20sp"
-            android:focusable="true" />
+            <TextView
+                android:id="@+id/autoStartStatus"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="16sp"
+                android:textColor="#FF9A9AA2" />
+
+            <Button
+                android:id="@+id/autoStartButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:minHeight="40dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:text="关闭开机自启"
+                android:textSize="18sp"
+                android:focusable="true"
+                android:nextFocusUp="@+id/overlayButton"
+                android:nextFocusDown="@+id/checkUpdateButton" />
+        </LinearLayout>
 
         <!-- 服务状态 -->
         <TextView
             android:id="@+id/standbyStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="48dp"
+            android:layout_marginTop="20dp"
             android:background="@drawable/status_pill_background"
             android:paddingStart="24dp"
             android:paddingEnd="24dp"
-            android:paddingTop="10dp"
-            android:paddingBottom="10dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
             android:text="@string/starting_service"
-            android:textSize="18sp"
+            android:textSize="16sp"
             android:textColor="#FF7BD88F"
             android:drawableLeft="@drawable/status_dot"
             android:drawablePadding="10dp" />
