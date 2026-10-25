@@ -65,15 +65,22 @@ object AppUpdate {
             val remoteName = tag.removePrefix("v").substringBefore("-")
             var downloadUrl: String? = null
             var assetName: String? = null
+            var bestCode = -1
             val assets = json.optJSONArray("assets")
             if (assets != null) {
+                // A Release may carry more than one v7a asset; pick the one
+                // with the highest embedded versionCode, never the first.
                 for (i in 0 until assets.length()) {
                     val asset = assets.getJSONObject(i)
                     val name = asset.optString("name", "")
                     if (name.contains("armeabi-v7a") && name.endsWith(".apk")) {
-                        downloadUrl = asset.optString("browser_download_url", "")
-                        assetName = name
-                        break
+                        val code = Regex("""\+(\d+)-armeabi-v7a\.apk$""")
+                            .find(name)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+                        if (code >= bestCode) {
+                            bestCode = code
+                            downloadUrl = asset.optString("browser_download_url", "")
+                            assetName = name
+                        }
                     }
                 }
             }
