@@ -4,10 +4,14 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.widget.Button
@@ -21,6 +25,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.kbtv.caster.BuildConfig
 import com.kbtv.caster.R
+import com.kbtv.caster.receiver.BootReceiver
 import com.kbtv.caster.service.CastCoordinatorService
 import com.kbtv.caster.update.AppUpdate
 import timber.log.Timber
@@ -39,6 +44,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var standbyStatus: TextView
     private lateinit var versionText: TextView
     private lateinit var checkUpdateButton: Button
+    private lateinit var overlayStatus: TextView
+    private lateinit var overlayButton: Button
+    private lateinit var autoStartStatus: TextView
+    private lateinit var autoStartButton: Button
     private lateinit var seekControlUi: View
     private lateinit var seekBar: SeekBar
     private lateinit var currentTime: TextView
@@ -121,6 +130,44 @@ class MainActivity : AppCompatActivity() {
         versionText.text = "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · fork 自动更新"
         checkUpdateButton = findViewById(R.id.checkUpdateButton)
         checkUpdateButton.setOnClickListener { checkForUpdate(silent = false) }
+
+        // Display-over-other-apps permission (exempts background
+        // bring-to-front on Android 10+; granted in system settings).
+        overlayStatus = findViewById(R.id.overlayStatus)
+        overlayButton = findViewById(R.id.overlayButton)
+        overlayButton.setOnClickListener {
+            if (isOverlayGranted()) {
+                Toast.makeText(this, "已允许显示在其他应用上层", Toast.LENGTH_SHORT).show()
+            } else {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            }
+        }
+
+        // Boot auto-start toggle (BootReceiver component on/off).
+        autoStartStatus = findViewById(R.id.autoStartStatus)
+        autoStartButton = findViewById(R.id.autoStartButton)
+        autoStartButton.setOnClickListener {
+            val component = ComponentName(this, BootReceiver::class.java)
+            val enabled = isAutoStartEnabled()
+            packageManager.setComponentEnabledSetting(
+                component,
+                if (enabled) PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                else PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                PackageManager.DONT_KILL_APP
+            )
+            refreshAutoStartStatus()
+            Toast.makeText(
+                this,
+                if (enabled) "已关闭开机自启" else "已开启开机自启",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        refreshOverlayStatus()
+        refreshAutoStartStatus()
         Timber.d("Standby UI visibility: ${standbyUi.visibility}")
         Timber.d("PlayerView visibility: ${playerView.visibility}")
     }
@@ -418,6 +465,49 @@ class MainActivity : AppCompatActivity() {
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
         return String.format("%02d:%02d", minutes, seconds)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Returning from system settings may have changed the overlay grant.
+        refreshOverlayStatus()
+        refreshAutoStartStatus()
+    }
+
+    private fun isOverlayGranted(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Settings.canDrawOverlays(this)
+        } else {
+            true
+        }
+    }
+
+    private fun refreshOverlayStatus() {
+        if (isOverlayGranted()) {
+            overlayStatus.text = "显示在其他应用上层：已允许"
+            overlayButton.text = "已允许"
+        } else {
+            overlayStatus.text = "显示在其他应用上层：未允许（投屏时可能无法切到前台）"
+            overlayButton.text = "去允许"
+        }
+    }
+
+    private fun isAutoStartEnabled(): Boolean {
+        val state = packageManager.getComponentEnabledSetting(
+            ComponentName(this, BootReceiver::class.java)
+        )
+        // DEFAULT follows the Manifest (enabled=true); only DISABLED means off.
+        return state != PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+    }
+
+    private fun refreshAutoStartStatus() {
+        if (isAutoStartEnabled()) {
+            autoStartStatus.text = "开机自启：已开启"
+            autoStartButton.text = "关闭开机自启"
+        } else {
+            autoStartStatus.text = "开机自启：已关闭"
+            autoStartButton.text = "开启开机自启"
+        }
     }
 
     /** Fork 自动更新：查 fork 自身 Releases，静默检查只对未提示过的新版弹窗。 */
