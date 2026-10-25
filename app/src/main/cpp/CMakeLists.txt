@@ -7,6 +7,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=. -ffile-prefix-map=${ANDROID_NDK}=.")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=. -ffile-prefix-map=${ANDROID_NDK}=.")
 
+# Fork 32-bit build: prebuilt OpenSSL/FFmpeg exist only for arm64-v8a/x86/x86_64,
+# so a plain armeabi-v7a build would fail at the prebuilt checks below.
+# For armeabi-v7a only, build a stub airplay_native instead: the DLNA-only
+# build never registers the AirPlay protocol (flag-gated off by default), so
+# NativeBridge, the sole loader of this library, is never initialized.
+if(ANDROID_ABI STREQUAL "armeabi-v7a")
+    add_library(airplay_native SHARED stub.c)
+    return()
+endif()
+
 set(UXPLAY_LIB third_party/UxPlay/lib)
 
 # ---------- OpenSSL (prebuilt cross-compiled; see scripts/build-openssl-wsl.sh) ----------
