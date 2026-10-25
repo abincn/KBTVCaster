@@ -24,6 +24,12 @@
     <!-- Install fork updates downloaded by the in-app updater -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Display over other apps: with this granted, bringing MainActivity to
+         the foreground on an incoming cast is exempt from Android 10+
+         background activity-start restrictions. Granted by the user in
+         system settings (or via adb appops); declared here only. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- Storage for file casting -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
