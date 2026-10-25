@@ -136,6 +136,42 @@
             android:textSize="20sp"
             android:focusable="true" />
 
+        <!-- Display over other apps -->
+        <TextView
+            android:id="@+id/overlayStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textSize="18sp"
+            android:textColor="#FF9A9AA2" />
+
+        <Button
+            android:id="@+id/overlayButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="去允许"
+            android:textSize="20sp"
+            android:focusable="true" />
+
+        <!-- Boot auto-start -->
+        <TextView
+            android:id="@+id/autoStartStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textSize="18sp"
+            android:textColor="#FF9A9AA2" />
+
+        <Button
+            android:id="@+id/autoStartButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="关闭开机自启"
+            android:textSize="20sp"
+            android:focusable="true" />
+
         <!-- 服务状态 -->
         <TextView
             android:id="@+id/standbyStatus"
