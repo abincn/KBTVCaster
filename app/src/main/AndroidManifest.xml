@@ -21,6 +21,9 @@
     <!-- Media session for remote control -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Install fork updates downloaded by the in-app updater -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- Storage for file casting -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -35,6 +38,17 @@
         android:theme="@style/Theme.KBTVCaster"
         android:usesCleartextTraffic="true"
         tools:targetApi="34">
+
+        <!-- FileProvider for installing downloaded update APKs -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- Main Activity -->
         <activity
