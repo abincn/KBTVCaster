@@ -14,6 +14,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
@@ -215,6 +216,7 @@ class MainActivity : AppCompatActivity() {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     this@MainActivity.isPlaying = isPlaying
                     Timber.d("IsPlaying changed: $isPlaying, hasMediaContent: $hasMediaContent")
+                    updateKeepScreenOn()
                     if (isPlaying && hasMediaContent) {
                         showVideo()
                     }
@@ -272,9 +274,11 @@ class MainActivity : AppCompatActivity() {
                 playerView.visibility = View.GONE
                 standbyUi.visibility = View.GONE
                 mirrorSurface.visibility = View.VISIBLE
+                updateKeepScreenOn()
             } else {
                 Timber.d("Mirror session ended, hiding mirror surface")
                 mirrorSurface.visibility = View.GONE
+                updateKeepScreenOn()
                 // 交回播放状态判断：有内容显示播放器，否则待机
                 val player = coordinatorService?.getExoPlayer()
                 if (player != null && player.isPlaying) {
@@ -299,7 +303,24 @@ class MainActivity : AppCompatActivity() {
         hasMediaContent = false
         isPlaying = false
         hideVideo()
+        updateKeepScreenOn()
         Timber.d("Stopped playback, returned to standby")
+    }
+
+    /**
+     * Keep the screen on only while video is actually playing or a mirror
+     * session is active. Cleared on pause, end, idle and standby, so the
+     * standby screen can still screensaver normally. This suppresses the
+     * Android screensaver during playback; it does not override Sony's
+     * idle-standby timer, which is a TV system setting.
+     */
+    private fun updateKeepScreenOn() {
+        val mirrorActive = coordinatorService?.mirrorRenderer?.sessionActive?.value == true
+        if (isPlaying || mirrorActive) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -569,6 +590,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         seekHideRunnable?.let { uiHandler.removeCallbacks(it) }
         // Remove player listener to prevent Activity context leak
         coordinatorService?.getExoPlayer()?.let { player ->
