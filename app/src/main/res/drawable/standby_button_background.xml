@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 待机页按钮背景：默认蓝、聚焦黄底白边，按下深蓝。聚焦态必须一眼可辨，
+     之前默认 Material 聚焦态在电视上与未聚焦几乎看不出区别。 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/primary_dark" />
+            <corners android:radius="24dp" />
+        </shape>
+    </item>
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFC107" />
+            <stroke android:width="2dp" android:color="@color/white" />
+            <corners android:radius="24dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/primary" />
+            <corners android:radius="24dp" />
+        </shape>
+    </item>
+</selector>
