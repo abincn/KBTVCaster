@@ -394,17 +394,31 @@ class CastCoordinatorService : Service(), CastProtocol.PlaybackSink {
      * is backgrounded, so the user sees playback start.
      */
     private fun bringUiToFrontIfNeeded() {
-        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val isForeground = activityManager.runningAppProcesses
-            .find { proc -> proc.pid == android.os.Process.myPid() }?.importance
-            ?.equals(ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND)
-            ?: false
+        // runningAppProcesses is restricted on newer Android and may report
+        // the wrong importance; on any doubt, attempt the bring-to-front and
+        // log the outcome instead of silently skipping it.
+        val isForeground = try {
+            val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            activityManager.runningAppProcesses
+                .find { proc -> proc.pid == android.os.Process.myPid() }?.importance
+                ?.equals(ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND)
+                ?: false
+        } catch (e: Exception) {
+            Timber.d("Foreground check failed, attempting bring-to-front anyway: $e")
+            false
+        }
 
         if (isForeground == false) {
-            val intent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+            try {
+                val intent = Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                // Background activity-start blocked (Android 10+): granting
+                // "display over other apps" in the standby UI exempts this.
+                Timber.e(e, "Bring-to-front blocked; overlay permission may be missing")
             }
-            startActivity(intent)
         }
     }
 
