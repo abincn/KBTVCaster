@@ -12,7 +12,7 @@ android {
         applicationId = "com.kbtv.caster"
         minSdk = 23
         targetSdk = 34
-        versionCode = 6
+        versionCode = 7
         versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
