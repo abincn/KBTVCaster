@@ -152,6 +152,7 @@ class MirrorVideoRenderer {
         teardownCodec(oldCodec)
         if (!running) {
             _rendering.postValue(false)
+            cooldownTimer?.cancel(); cooldownTimer = null
             // stats only after the feeder thread is dead (it owns latencyMicros)
             synchronized(lock) {
                 pending.clear()
@@ -446,12 +447,13 @@ class MirrorVideoRenderer {
         // restarts into the same mode burn seconds of black each time. The
         // buffer+blit tier is the proven-working path on this TV.
         var starved = false
-        // Degrade on ANY failure that rendered zero frames in surface mode:
-        // the firmware jams two ways (input buffers withheld OR output
-        // stalled) and both mean the mode is unusable for this session.
+        // GL first: this firmware's CPU blit tier never produces output
+        // (field 2026-10-26: healthy upstream, black screen, skippedBlits
+        // climbing), so surface failures retry GL twice before the blit
+        // fallback — a start or resolution-flip stall must recover in GL.
         if (!bufferMode && renderedFrames == 0L) {
             surfaceModeStarves++
-            starved = surfaceModeStarves >= 1
+            starved = surfaceModeStarves >= 2
         }
         val (oldCodec, oldFeeder) = synchronized(lock) {
             if (starved) {
@@ -469,8 +471,30 @@ class MirrorVideoRenderer {
                 queuedAtNs.clear()
                 maybeStartCodecLocked()
             }
+        } else {
+            // Budget exhausted. The restart churn itself deepens the MStar
+            // VDEC wedge (its buffer pool drains only minutes after the
+            // churn stops — field 2026-10-26: cold boot + first session
+            // still refused). Back off: probe with ONE restart per minute.
+            cooldownTimer?.cancel()
+            cooldownTimer = java.util.Timer("mirror-decoder-cooldown", true).apply {
+                schedule(object : java.util.TimerTask() {
+                    override fun run() {
+                        synchronized(lock) {
+                            if (sessionRunning && codec == null && csd0 != null) {
+                                Timber.w("decoder cooldown elapsed — probing restart")
+                                restartsAllowed = 1
+                                queuedAtNs.clear()
+                                maybeStartCodecLocked()
+                            }
+                        }
+                    }
+                }, 60_000)
+            }
         }
     }
+
+    private var cooldownTimer: java.util.Timer? = null
 
     /** Must hold [lock]. Stops accepting frames; caller joins feeder and releases the codec. */
     private fun stopCodecLocked(): MediaCodec? {
