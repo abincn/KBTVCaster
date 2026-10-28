@@ -12,8 +12,8 @@ android {
         applicationId = "com.kbtv.caster"
         minSdk = 23
         targetSdk = 34
-        versionCode = 10
-        versionName = "0.3.0"
+        versionCode = 11
+        versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -26,7 +26,7 @@ android {
         // UxPlay mirror kernel (Phase 2): real TV is arm64, TV emulator x86 (32-bit).
         // -Pkbtv.build.abi=<abi> builds a single-ABI APK for slow network-adb installs.
         val singleAbi = project.findProperty("kbtv.build.abi") as? String
-        ndk { abiFilters += (singleAbi?.let { listOf(it) } ?: listOf("arm64-v8a", "x86_64", "x86")) }
+        ndk { abiFilters += (singleAbi?.let { listOf(it) } ?: listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")) }
         externalNativeBuild {
             cmake {
                 arguments += "-DANDROID_STL=c++_shared"

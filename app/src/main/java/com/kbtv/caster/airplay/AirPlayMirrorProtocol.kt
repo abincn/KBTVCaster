@@ -54,6 +54,8 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
         this.sink = sink
         try {
             val appContext = context.applicationContext
+            this.appContext = appContext
+            registerNetworkWatch(appContext)
             val keyFile = appContext.filesDir.resolve("airplay.pem").absolutePath
             // oboe's OpenSL ES backend (pre-AAudio devices, like the Android 6
             // field TV) cannot discover native rate/burst itself; hand it the
@@ -130,7 +132,13 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
             // until a full cycle completes (多屏互动 warms it for itself —
             // field 2026-10-26). Warm it here so the user's first cast works.
             warmup = MirrorDecoderWarmup(
-                appContext.filesDir.resolve("trace/mirror-dump.h264"),
+                {
+                    val f = appContext.filesDir.resolve("trace/mirror-dump.h264")
+                    f.takeIf { it.exists() }?.readBytes() ?: runCatching {
+                        // fresh installs: bundled synthetic test stream
+                        appContext.assets.open("mirror-warmup.h264").use { it.readBytes() }
+                    }.getOrNull()
+                },
                 { mirrorUiActive },
             ).apply { start() }
         } catch (e: Exception) {
@@ -178,6 +186,13 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
     }
 
     override fun stop() {
+        networkCallback?.let { cb ->
+            appContext?.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                ?.let { it as? android.net.ConnectivityManager }?.unregisterNetworkCallback(cb)
+        }
+        networkCallback = null
+        synchronized(restartLock) { restartPending?.let { restartHandler.removeCallbacks(it) } }
+        appContext = null
         warmup?.cancel()
         warmup = null
         registrations.forEach {
@@ -215,6 +230,67 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
     private var mirrorUiActive = false
 
     private var warmup: MirrorDecoderWarmup? = null
+
+    // Long-uptime killer (field 2026-10-28): every native socket binds to the
+    // network interface present at start; one wifi/router bounce renumbers it
+    // and mDNS answers ENODEV + NTP goes unreachable — the receiver turns
+    // invisible until reboot. Rebind the whole stack when a network appears.
+    private var appContext: android.content.Context? = null
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private val restartLock = Any()
+    private var restartPending: Runnable? = null
+    private var lastRestartElapsed = 0L
+
+    private fun registerNetworkWatch(context: android.content.Context) {
+        val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+            as? android.net.ConnectivityManager ?: return
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                TraceRecorder.log("mirror_network_change")
+                scheduleRestart(context)
+            }
+        }
+        networkCallback = cb
+        try {
+            cm.registerNetworkCallback(android.net.NetworkRequest.Builder().build(), cb)
+        } catch (e: Exception) {
+            Timber.w(e, "network watch register failed")
+        }
+    }
+
+    private fun scheduleRestart(context: android.content.Context) {
+        synchronized(restartLock) {
+            restartPending?.let { restartHandler.removeCallbacks(it) }
+            val r = Runnable { restartNative(context) }
+            restartPending = r
+            restartHandler.postDelayed(r, 5000)
+        }
+    }
+
+    private fun restartNative(context: android.content.Context) {
+        synchronized(restartLock) {
+            restartPending = null
+            val elapsed = android.os.SystemClock.elapsedRealtime()
+            if (elapsed - lastRestartElapsed < 30_000) return
+            lastRestartElapsed = elapsed
+        }
+        Timber.w("network changed — restarting AirPlay stack")
+        val sink = this.sink
+        try { stop() } catch (e: Exception) { Timber.w(e, "restart stop") }
+        try { start(context, sink ?: return) } catch (e: Exception) {
+            Timber.e(e, "restart start failed")
+        }
+    }
+
+    private val restartHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    // Session-level callbacks arrive on NATIVE connection threads; heavy work
+    // here (codec teardown, audio stop) blocked the httpd loop and wedged the
+    // receiver after every session (field 2026-10-29: port listening, RTSP
+    // never answered). Everything except the per-frame path runs here.
+    private val callbackExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "mirror-callbacks").apply { isDaemon = true }
+    }
 
     override fun onVideoData(data: ByteArray, ntpTimeNs: Long, isH265: Boolean) {
         lastVideoNs = System.nanoTime()
@@ -275,9 +351,7 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
                     // by the self-heal reopen in onVideoData, not by waiting.
                     if (System.nanoTime() - lastVideoNs > 10_000_000_000L) {
                         Timber.w("mirror idle >10s, closing session")
-                        TraceRecorder.log("mirror_idle_timeout")
-                        onAudioTeardown()
-                        onMirrorRunning(false)
+                        closeMirrorSession("mirror_idle_timeout")
                     }
                 }
             }, 2000, 2000)
@@ -315,9 +389,19 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
         }
     }
 
+    // The sender's telemetry alternates content and display dimensions every
+    // few seconds (500x1080 <-> 1920x1080 — field 2026-10-28); each distinct
+    // report used to tear the decoder down and restart it. Act only on a
+    // size that repeats consecutively: real changes persist, flapping dies.
+    private var lastSizeW = 0f
+    private var lastSizeH = 0f
+
     override fun onVideoSize(srcW: Float, srcH: Float, w: Float, h: Float) {
         TraceRecorder.log("mirror_video_size", "w" to w, "h" to h)
-        videoOut?.setResolution(w.toInt(), h.toInt())
+        val act = lastSizeW == 0f || (w == lastSizeW && h == lastSizeH)
+        lastSizeW = w
+        lastSizeH = h
+        if (act) videoOut?.setResolution(w.toInt(), h.toInt())
     }
 
     override fun onVolumeChange(volume: Float) {
@@ -327,6 +411,10 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
     override fun onClientVolume(): Float = 0f
 
     override fun onAudioTeardown() {
+        callbackExecutor.execute { handleAudioTeardown() }
+    }
+
+    private fun handleAudioTeardown() {
         audioStatsTimer?.cancel()
         audioStatsTimer = null
         try {
@@ -343,16 +431,20 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
 
     override fun onConnectionDestroy() {
         TraceRecorder.log("mirror_conn_destroy")
-        // A closed RTSP connection ends mirroring even without TEARDOWN.
-        // Safe under nohold takeover: the evicted old connection always
-        // destroys before the new session's first mirror frame arrives.
-        if (mirrorUiActive) onMirrorRunning(false)
+        callbackExecutor.execute {
+            // A closed RTSP connection ends mirroring even without TEARDOWN.
+            // Safe under nohold takeover: the evicted old connection always
+            // destroys before the new session's first mirror frame arrives.
+            if (mirrorUiActive) closeMirrorSession("mirror_conn_close")
+        }
     }
 
     override fun onConnectionReset(reason: Int) {
         TraceRecorder.log("mirror_conn_reset", "reason" to reason)
         // 1 = RESET_TYPE_RTP_SHUTDOWN: TEARDOWN 110, sender ended mirroring.
-        if (reason == 1 && mirrorUiActive) onMirrorRunning(false)
+        if (reason == 1) callbackExecutor.execute {
+            if (mirrorUiActive) closeMirrorSession("mirror_conn_reset_close")
+        }
     }
 
     // iOS stop-mirroring sends video_pause and NOTHING else (no TEARDOWN,
@@ -360,17 +452,30 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
     // signal is pause followed by silence.
     private var pauseGrace: java.util.Timer? = null
 
+    // UxPlay's native threads die one by one across reconnect cycles (field
+    // 2026-10-29: httpd select loop gone after the 2nd session — RTSP
+    // accepts but never answers). Commercial receivers re-init their whole
+    // stack after every session; do the same: 5s after a close, rebuild.
+    private fun closeMirrorSession(traceEvent: String) {
+        TraceRecorder.log(traceEvent)
+        onAudioTeardown()
+        if (mirrorUiActive) onMirrorRunning(false)
+        appContext?.let { scheduleRestart(it) }
+    }
+
     override fun onVideoPause() {
         TraceRecorder.log("mirror_video_pause")
+        callbackExecutor.execute { handleVideoPause() }
+    }
+
+    private fun handleVideoPause() {
         pauseGrace?.cancel()
         pauseGrace = java.util.Timer("mirror-pause-grace", true).apply {
             schedule(object : java.util.TimerTask() {
                 override fun run() {
                     if (mirrorUiActive && System.nanoTime() - lastVideoNs > 3_000_000_000L) {
                         Timber.w("video paused >3s with no frames — closing session")
-                        TraceRecorder.log("mirror_pause_close")
-                        onAudioTeardown()
-                        onMirrorRunning(false)
+                        closeMirrorSession("mirror_pause_close")
                     }
                 }
             }, 3000)
@@ -379,8 +484,10 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
 
     override fun onVideoResume() {
         TraceRecorder.log("mirror_video_resume")
-        pauseGrace?.cancel()
-        pauseGrace = null
+        callbackExecutor.execute {
+            pauseGrace?.cancel()
+            pauseGrace = null
+        }
     }
 
     override fun onDisplayPin(pin: String) {
