@@ -74,6 +74,8 @@ Java_io_github_jqssun_airplay_bridge_NativeBridge_nativeInit(
     }
     ctx->cb_ctx.raop = ctx->raop;
 
+    // keep INFO in production: DEBUG (full RTSP conversation dumps) flooded
+    // user logcat; re-enable temporarily when hunting protocol issues
     raop_set_log_level(ctx->raop, LOGGER_INFO);
     raop_set_log_callback(ctx->raop, _log_callback, NULL);
 
