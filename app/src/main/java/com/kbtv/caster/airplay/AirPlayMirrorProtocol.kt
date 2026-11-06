@@ -76,6 +76,13 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
                 TraceRecorder.log("mirror_start_failed", "stage" to "init")
                 return
             }
+            // [kbtv] headless-injector builds (-Pkbtv.flags.injector=true) pass
+            // undecrypted H.264 through: the synthetic sender cannot run the
+            // FairPlay handshake. Debug builds only — never set in release.
+            if (com.kbtv.caster.BuildConfig.FLAG_INJECTOR_BYPASS) {
+                NativeBridge.nativeSetMirrorPlaintext(true)
+                TraceRecorder.log("mirror_injector_bypass", "enabled" to true)
+            }
             val dm = appContext.resources.displayMetrics
             NativeBridge.nativeSetDisplaySize(handle, dm.widthPixels, dm.heightPixels, MAX_FPS)
             // (alac, aac): audio codec advertisement. Both on — mirrors the
@@ -241,13 +248,47 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
     private var restartPending: Runnable? = null
     private var lastRestartElapsed = 0L
 
+    // Networks already reported to us. registerNetworkCallback immediately
+    // replays every EXISTING network through onAvailable — treating that
+    // registration receipt as a change made every fresh process tear the
+    // stack down again ~5s after boot, and the TV's ConnectivityService
+    // re-registers duplicate agents at random moments too (2026-10-31:
+    // boot → false restart → restart-timeout churn ×3). Cling's router
+    // deduplicates the same noise ("No actual network change... ignoring").
+    private val networksSeen = java.util.Collections.synchronizedSet(HashSet<android.net.Network>())
+    private var watchRegisteredAtElapsed = 0L
+
     private fun registerNetworkWatch(context: android.content.Context) {
         val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
             as? android.net.ConnectivityManager ?: return
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
                 TraceRecorder.log("mirror_network_change")
+                val firstSighting = networksSeen.add(network)
+                val inRegistrationGrace =
+                    android.os.SystemClock.elapsedRealtime() - watchRegisteredAtElapsed < 3_000
+                if (!firstSighting || inRegistrationGrace) {
+                    Timber.i("ignoring onAvailable for known network / registration grace")
+                    return
+                }
+                // An ACTIVE mirror session is the strongest evidence the
+                // network path works. This TV's ConnectivityService spawns
+                // fresh network agents during wifi churn (2026-10-31 evening:
+                // a new agent every ~33s, each one restarting the stack, which
+                // amputated the live session and cascaded into a service
+                // rebuild via the restart-timeout alarm). Only an idle stack
+                // needs this callback as a recovery hook (standby wake, mDNS
+                // gone stale).
+                if (mirrorUiActive) {
+                    Timber.i("network agent churn during active mirror session — ignoring")
+                    TraceRecorder.log("mirror_network_change_ignored_active_session")
+                    return
+                }
                 scheduleRestart(context)
+            }
+
+            override fun onLost(network: android.net.Network) {
+                networksSeen.remove(network)
             }
         }
         networkCallback = cb
@@ -259,6 +300,7 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
             restartHandler.post {
                 try {
                     cm.registerNetworkCallback(android.net.NetworkRequest.Builder().build(), cb)
+                    watchRegisteredAtElapsed = android.os.SystemClock.elapsedRealtime()
                 } catch (e: Exception) {
                     Timber.w(e, "network watch register failed")
                 }
@@ -556,10 +598,54 @@ class AirPlayMirrorProtocol : CastProtocol, RaopCallbackHandler, io.github.jqssu
 
     override fun onDacpId(dacpId: String, activeRemote: String) {}
 
+    // Generation guard for the queued teardown path: a mirror flip retires
+    // the old instance (false) and immediately starts the new one (true). The
+    // true path runs synchronously (below), so a queued false can dequeue
+    // AFTER the new session is live — it must then skip, or it tears down
+    // the live session (2026-10-31 regression: black screen on every cast).
+    private val mirrorRunGen = java.util.concurrent.atomic.AtomicLong(0)
+
     override fun onMirrorRunning(running: Boolean) {
+        // Light state flips stay synchronous (native calls this from the
+        // httpd thread at quiesce/start; it must never block there).
         mirrorFrames = 0
         mirrorUiActive = running
-        if (running) startSessionWatchdog() else stopSessionWatchdog()
+        if (running) {
+            // A new session starting is itself proof the stack is alive:
+            // cancel the teardown-rebuild that onConnectionDestroy schedules
+            // after EVERY close. Left armed, that 5s bomb lands mid-session
+            // on quick switches (<2s gaps, G1) and kills the live cast —
+            // injector session 4 died exactly this way (2026-11-01). When
+            // the httpd is genuinely wedged no new session can start, so the
+            // rebuild still fires for the case it was built for.
+            synchronized(restartLock) {
+                restartPending?.let { restartHandler.removeCallbacks(it) }
+                restartPending = null
+            }
+            startSessionWatchdog()
+        } else {
+            stopSessionWatchdog()
+        }
+        val gen = mirrorRunGen.incrementAndGet()
+        if (running) {
+            // Synchronous, exactly as pre-reaper: on this MStar/GL stack the
+            // codec start must interleave with the UI surface dance in the
+            // order it always had — moving it onto the executor broke surface
+            // mode (BufferQueue abandoned right after configure, buffer-mode
+            // fallback never renders on this TV) and nothing displayed.
+            runMirrorSession(true)
+        } else {
+            // Pure teardown is thread- and delay-tolerant; keeping it off the
+            // caller thread preserves the async-retire guarantee that the
+            // httpd thread never joins renderer workers.
+            callbackExecutor.execute {
+                if (gen != mirrorRunGen.get()) return@execute // superseded by a newer true
+                runMirrorSession(false)
+            }
+        }
+    }
+
+    private fun runMirrorSession(running: Boolean) {
         videoOut?.onSession(running)
         try {
             onMirrorSession?.invoke(running)
