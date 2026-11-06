@@ -409,3 +409,102 @@ JVM 三旗全绿；airplay 旗 APK 已上电视（网络侧核验双绿）。**�
 - **机器门（补丁构建，模拟器 dumpsys 验版本 0.4.1 后）**：JVM 三旗（默认/playbackPlan/airplay）EXIT=0 ✅；rtsp_health 25ms ✅；reconnect_hammer 5/5（恢复 5-36ms）✅。
 - **真机**：电视已随用户休眠（ping 半丢）——装机+G1 活体验证留早晨用户轮（快速连播切换 ≥5 次 + assert_session --since-hours 1）。
 - **Ghidra**：liblelink.so 无头分析已启动（~/rea-probe/liblelink-arm32），Round 2 用其 diff SET_PARAMETER 处理路径。
+
+---
+
+## Round 26（2026-10-31 早晨）—— 0.4.1 装机 + G1/G2 用户轮：会话扛住 9 次切换；音频/黑屏定性为发送端内容保护【Phase 3 用量 2/25】
+
+- **装机**：v7a 单 ABI 构建（`-Pkbtv.build.abi=armeabi-v7a -Pkbtv.flags.airplay=true`）安装成功，dumpsys 验 0.4.1 / lastUpdateTime=10-31 09:47:48。mDNS PASS + RTSP :7000 200 OK 25ms。
+- **G2（机器侧 ✅）**：电视断电重启后（uptime ≈7h）不经 M0 预热，首次真实会话直接出画面。warmup 全程报 cold（attempt 1-5，含会话前 4 秒）——再证「合成流拒用 ≠ 真流失败」。09:49:28 有 21ms 试探连接（video_flush 即断，疑 iOS 枚举）。
+- **G1（核心 ✅，字面差一个会话）**：单会话 faeb830d 09:55:41→09:57:16（95s）：**3020 帧 dropped=0 p95=147.8ms**；10 次分辨率翻转（500↔1920）=用户连播切换 **≥9 次**，会话存活到底（结束= idle_timeout，用户停止/iOS 停发）；**解码器全程 1 次创建 0 重启**（10-30 翻转即重启的对照）。skip=0、无 crop/degenerate 命中、GL 全程绘制。assert_session 1/2——min-sessions=2 需第二个会话（重连证明），用户轮补投未完成。
+- **G5 真凶定位（接收端音频管线无罪）**：首个视频真音频 3111 包（15s，decodeErr=0 xrun=0）；09:56:08 起 `real` 冻结、后续到达全为 no-data 空标记包（datapkts 持续涨=链路活）。**发送端停止音频采集**。
+- **黑屏定性（用户证词+日志互证）**：横屏视频黑屏但流不停、退出播放器镜像恢复可见、后续视频均黑、最终断连（idle_timeout=发送端停发）。接收端渲染健康（上列证据）→ 指向 **iOS DRM 采集排除**（黑帧+空音频包是同一机制的两面）。推论：乐播镜像同墙；乐播「好好的」应为 App 内投屏按钮走推送通道（视频流直推不经采集）。待确认：App 名 + 用户投屏入口 + 乐播对照入口。
+- **R2 备料**：Ghidra headless 实际未跑成（昨夜记录有误，仅 .so 拷贝）——已重启（~/rea-probe/ghidra_proj，log: ~/rea-probe/ghidra_analyze.log）。
+
+---
+
+## Round 27（2026-10-31 上午）—— G1 用户轮判定 + 回环锤暴露同步销毁楔死 + 异步 reaper 修复【Phase 3 用量 3/25】
+
+- **G1 用户轮结果**：单会话 95s 扛住 ≥9 次切换（详见 R26 记录前的现场：3020 帧 dropped=0 p95=147.8ms，解码器 0 重启）；**字面差第二个会话**（assert_session min-sessions=2，用户补投未完成——被「投不上」打断，见下）。
+- **新缺陷（P0 级，本轮主假设）**：0.4.1 的 SETUP 同步销毁在**单线程 httpd** 上 JOIN 三个工作线程；镜像线程卡在回调内时整个 RTSP 服务楔死（不 accept/不应答/数据停流）。用户真机暴露（09:57 切换风暴后「投不上」），`scripts/probe/setup_storm.py` 1 分钟复现（补丁前 SETUP#2 即卡 12s+）。
+- **修复（c9f834d）**：乐播 stopPrevious=异步 dying 语义的移植——`raop_conn_retire_streams()` 同步静默（quiesce 保序回调 false + 抑制旧线程迟到回调）→ 三件套摘指针 → detached reaper 收尸；`stop()` 守卫改 joined-only（修 quiesce 后 free 的 UAF 面）；Kotlin `onMirrorRunning` 轻重分离（重活过 callbackExecutor 串行，false→true 提交序=执行序）。
+- **机器门**：风暴锤 **30/30 SETUP 秒回** + 同连接金丝雀全绿 + 收线后 3ms（补丁前同模式卡死）；重连锤 5/5（恢复 4-13ms，接管路径复验）；三旗 JVM BUILD SUCCESSFUL。风暴期间 30 组 false→true 全保序（logcat 逐条验证）。
+- **暴露未修（Round 28 候选，0.4.0 时代已存在——09:38 就有 mirror_stack_restart_timeout）**：① 栈重启 12s 超时→进程自杀重启的升级链在churn下误触发；② 网络看门狗在进程启动 ~5s 后被电视 ConnectivityService 重复 agent 注册噪音误报「network changed」；③ NTP 线程对无效 rport 每 3s EINVAL 重试不止。
+- **锤的自坑两则（记档）**：plist 带 type 103 会被处理器拒收断连（伪装成楔死）；健康探针带 CSeq 会触发 nohold 驱逐自己的风暴连接——改用同连接 OPTIONS 金丝雀。
+
+### Round 27 补记（11:09，v2）
+- **回归事故**：v1 把 onSession(true) 整体搬 executor → 真机完全投不上（11:01 会话：1000 帧到达、解码器 9 连启、0 帧渲染、dropped=202）。根因：true 迟到 ~1s，带 SPS 才执行 → codec 启动与 MainActivity surface 换装赛跑 → BufferQueue abandoned → buffer 回退（本机从不工作）→ 全灭。**风暴锤测不到此路径**（合成流无 SPS 不起 codec）——机器门盲区记录在案。
+- **v2**：true 恢复同步（旧交错），false 排队+代际守卫（被新 true 取代则跳过）。风暴 15/15 绿、时序零乱序、收线 4ms。
+- **教训入账**：改渲染时序的修复，机器门后必须真机首投验证再请用户；executor 化 = 时序变更，不是无害并发化。
+
+### Round 27 终局（11:18，回滚）
+- **v2 真机仍黑屏**（用户 11:1x 尝试）。两版 reaper 均在机器门全绿下破坏真实投屏——合成门对 codec/surface 交错是盲的。
+- **用户拍板回滚**：「早晨轮判定那个就是正常的，只有几个小问题」。7e97a65 将五个文件还原至 a76ba5d（= 早晨 3020 帧会话的确切代码），已装机验证（RTSP 200/mDNS PASS）。
+- **状态**：接收端回到早晨已知好状态。遗留开放缺陷（均已在案）：① 密集切换后 httpd 楔死（setup_storm 可复现类）；② F21 重启链。**下次触碰会话销毁路径前，必须先在真机拿到 v2 黑屏的完整日志归因（11:01 会话只有 9 连启+abandoned 队列证据，v2 失败现场未取证——不要再盲改。）
+
+---
+
+## Round 28（2026-10-31 午间）—— 双修复合体：过期错误守卫 + 换面重置降级 + reaper 回落【Phase 3 用量 4/25】
+
+- **11:27 取证（回滚代码上）锁死黑屏根因**：自动唤起 Activity 的 SurfaceView 在会话中途就位 → setSurface 主动退役 codec → feeder 迟到异常被 handleCodecError 误计 starve ×2 → createDecoder（starves!=0 分支）整场钉死 bufferMode（本机从不产画面）。早晨能用的真相=Activity 已在前台 7 分钟（装机时 am start），surface 先于流存在。
+- **修复**：①handleCodecError(failedCodec) 过期实例守卫（主动拆装不再计饿死）；②setSurface 换面时 surfaceModeStarves=0（新面无旧账）。同时 revert 回滚（reaper v2 回落——其真机失败发生在解码器楔死纪元，从未在健康解码器上被测过）。
+- **机器门**：三旗 JVM ✅；风暴 15/15 + 金丝雀 + 收线 3ms ✅；锤 3/3（4-13ms，风暴尾探针撞 F21 重启窗后收敛复跑）✅。
+- **待用户一轮四合一**：不开 App 直接投（自动唤起+表面赛跑=真 G2）→ 切视频数次（reaper+G1）→ 停止重连（楔死+G1 字面第二会话）→ 听声音（G5）。
+
+---
+
+## Round 29（2026-10-31 午后）—— 用户离开自主轮：F21 看门狗修复 + G4 提取结案【Phase 3 用量 5/25】
+
+- **F21 修复（4f66afb）**：onAvailable 注册回执/重复 agent 噪音去重（seen 集合 + 3s 注册宽限；Cling Router 同款语义）。三旗 JVM ✅。真机验证（冷启无误重启断言）待电视回来——用户离开时已关机，装机顺延。
+- **Ghidra 基座落地**：analyzeHeadless 持久后台跑法（WSL 空闲自杀坑：`wsl -e` 会话退出后 VM 关机杀后台任务——改 Bash 工具 run_in_background 挂前台命令）；FindStrXref.java 提取脚本（Ghidra 12 无 Jython）。
+- **G4 结案（F23）**：本机全默认无旋钮差；乐播优势=会话生命周期（已移植）+播放器先行（F22 方向）。**F24**：init 重试 500ms×25 后一次；参数桥全解。
+- **装机状态**：R28 双修复合体在机（11:47:41），F21 修复已构建未装机（电视离线）。用户回来后：装机 → 冷启无误重启断言 → 四合一用户轮。
+
+---
+
+## Round 30（2026-10-31 午后）—— 全量移植收尾：F22 连接中状态 + F13 重试节奏【Phase 3 用量 6/25】
+
+- **F22 落地（67484f4）**：镜像会话激活即显示连接中 overlay（spinner + 「正在连接投屏…」），首帧渲染隐藏（rendering LiveData 仅会话末回 false，中途重启不闪屏）。乐播「播放器先行+loading」的用户可感行为面对齐。
+- **F13/F24 落地**：init 期失败（renderedFrames==0）重试前 sleep 500ms——字面移植乐播「sleep, and will try init_decoder again」节奏。
+- **F7/F8 显式跳过**：帧仓库/心跳为内部遥测，G3 条件未触发（G1 已由 R28 另路关闭），无可观察行为差异——记录性跳过，非遗漏。
+- **三旗 assembleDebug+test 全绿**。APK 已构建（含 R28 双修复 + F21 看门狗 + F22/F13），电视回来一键装机。
+- **移植清单终态**：F1✅ F4✅ F5✅ F9/F20✅(R28) F22✅ F13/F24✅ F23(无需移植=全默认) F7/F8(条件未触发) —— SPEC 路线 A 的行为面**全部覆盖**。
+
+---
+
+## Round 31（2026-10-31 晚）—— headless 注入器闭环 + 三修复（JNI detach / F13 实例化 / F21 会话保护）【Phase 3 用量 7/25】
+
+- **注入器全链打通（d92cfe3）**：`scripts/probe/mirror_inject.py`——OPTIONS/SETUP(二进制 plist type110) → 镜像数据 TCP → 128 字节头帧流（**头长度/时间戳 LE，VCL payload BE 长度前缀**；fmt 包 = UxPlay 内部布局 `6B头+BE短sps长+裸SPS+1隔+BE短pps长+裸PPS`，填 16/20/56/60 号字节 LE float 宽高）。`-Pkbtv.flags.injector=true` 门控 mirror_buffer 明文旁路（release 永不置位）。**fmt 每 GOP 重发会把 mid-stream SPS/PPS 喂进 OMX → 一帧后 ISE → 170ms 重启风暴**；对齐真实 sender（fmt 仅流首一次）后风暴归零。
+- **机器验证成绩（电视上，无需手机）**：冷启动直投（断电重启→不经预热注入）**frames=353 p95=115ms 过 assert 双门**；20s 单会话满帧率零重启 p95=38.6ms；G1 六连轮（12s+1s 间隔）每轮完整收发。
+- **三修复落地**：
+  - `466ab15` JNI pthread_key 自动 DetachCurrentThread（镜像线程退役退出不再 SIGABRT 全进程——Android 6 ART 行为）；
+  - `32d1b5a` F13 节流 per-codec-instance 化（renderedFrames 是 renderer 级累计，旧条件让任何渲过帧的会话失去 500ms 失败间隔→170ms 连击 MStar）；
+  - `c749c34` F21 活会话保护：wifi churn 新 network agent 每约 33s 杀栈一次（六连轮 session 3/6 即死于它→超时告警→服务重建）；现 idle 栈才响应该恢复钩子。
+- **环境事实**：电视 wifi churn 晚间高发；adbd TCP 可死于系统级压力（ping 通 5555 不通，现场重启治）；`[VDEC] Vdec Init Failed` = 解码器系统楔死判据（churn 累积，重启电视治）。gradle.org 当晚不可达——wrapper 8.7 缓存损坏时用本地已有 8.14.3 dist 克隆到 URL-hash 目录名可救急（gradle-wrapper.properties 改动**未提交**，勿入库）。
+- **欠账**：B/C 修复的六连轮复测被电视 adbd 失联打断（F21 guard 版已构建在 build 输出）；reconnect_hammer / assert_session 机器判据轮；之后才是一次用户四合一轮。
+
+### R31 附录：M5 模拟器双旗 e2e 复验（2026-10-31 深夜，积压 #4 关闭）
+
+- **注入器 --emulator 模式**（QEMU console redir）：adb forward 无法承载镜像数据口——adbd 设备侧连 `localhost` 优先解析 ::1，而 data socket 是 AF_INET 单栈（7000 能通纯因 httpd 双栈监听 ::）。console 需预置 auth token 文件再启动模拟器。
+- **dump 喂养闭环**：模拟器注入 15-20s 即产 mirror-dump.h264（588/590 帧 p95=86ms 零丢），e2e 里 7 个"connect a mirror session first"用例复活。connectedAndroidTest 结束会卸载清数据——每轮前重喂。
+- **双旗对称结果**：on 旗 18 用例 12 pass/2 skip/4 fail；off 旗 12 pass/5 skip/4 fail——**4 个失败两旗完全同组**，全部真机专属：注入 320 流 ≠ 真机 iPhone dump（pts-small/control-C 阈值按真机流定）、t1080-high.h264 真机资产、goldfish 解码器输出 YV12 vs 真机 NV12（GL 测试）。可模拟器化判据（canned 软解≥100帧 p95<150ms、DLNA 链、FlipStream、音频探针）双旗全绿。
+- 三旗 JVM：`./gradlew test` EXIT=0。
+- 电视 adbd 全程失联（ping 通 5555 拒，需现场重启）；真机资产 push 与 F21-guard 六连轮复测顺延至电视回归。
+
+---
+
+## Round 32（2026-11-01 凌晨）—— 5 秒重建炸弹拆除：G1 机器门全绿【Phase 3 用量 8/25】
+
+- **昨夜归因纠错**：六连轮 session 4 之死不是 wifi churn——`onConnectionDestroy` 对**每次正常断开**都排 5s 全栈重建（10-29 httpd 楔死修复的过度覆盖），快速切换时炸弹落在下一个会话中途；restartNative 的固定日志文案 "network changed" 把两次归因都带偏了。
+- **修复**：onMirrorRunning(true) 先解除 pending 重建（新会话能开始=栈活着；真楔死时新会话起不来、重建照常兜底）。F21 活会话保护（c749c34）继续有效但只是第二道防线。
+- **机器门三绿（正式判据，v7a 真机）**：①六连轮（12s+1s 间隔）每轮完整 353 帧 p95 6-7ms 零中断；②reconnect_hammer **5/5 PASS**（recovery 3-6ms）；③assert_session --since-hours 1 **RESULT PASS**（11 OK/12，唯一 LOW=装机后首轮 299 帧）。
+- **装机**：用户轮前已换 airplay-only 正式包（injector 明文旁路包不能用于真 iPhone 流）。
+- **待用户四合一轮**：G2 直投（自动唤起）/ G1 切视频 5+ 次 / 停止后重连 / G5 听声音。
+
+---
+
+## v0.5.0 发版（2026-11-06）【Phase 3 收尾】
+
+- 用户一句话批准「推送发版」。`scripts/release.sh 0.5.0`：versionCode 9，changelog 全量（四类会话杀手修复 + 冷启动耐心 + F22 连接态 + headless 验证体系），tag v0.5.0 @ 33c15fe。
+- CI release workflow **completed success**，双 APK 已上架：app-release.apk + app-release-airplay.apk。
+- 发版前处理：本地 gradle-wrapper 8.14.3 断网顶替 hack 已还原为 8.7（CI 既往三次发版路径，零扰动；本地 8.7 缓存损坏仅影响本机构建，可用缓存克隆法自救——见 R31 环境事实）。
