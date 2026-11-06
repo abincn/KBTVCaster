@@ -47,3 +47,34 @@
 | F16 | **mirror_player create 调参旋钮全集**（运行时日志格式串直录）：strSessionId/nPlayerType/nAndroidVersion/**strCodecName**（按机型选解码器）/**nLowlatencyType**/**bResetHard**/**bSupportDropFrame**/**bFlushCache**/**bPtsUseMs**/**nSpsPpsUsage**（SPS/PPS 供给模式：csd 注入 vs 流内——与分辨率切换行为直接相关）/**nFirstFrameOptimizeType**/nProtocol/nVideoFramerateSet/nAudioSampleRateInHz/nFrameHandleType；另有 ProcessSetParameter 按类型分发（volume 等）、unsupported 显式拒绝；ScreenStream 会话生命周期（begin to run/exit per server fd） | liblelink.so 串（mirror_player/ScreenStream 区） | G4 调参对照表 + G1 切换语义（nSpsPpsUsage 待 Ghidra 取值） | ✅ 串级 |
 
 **乐播源文件地图**（`__FILE__` 全集）：common/libplist、common/libxml2、httpdserver/（lighttpd 系 11 文件）、sink/mirror_player/mediacodec_wrapper.c、sink/rtp_stream/{netutils,raop_buffer}.c、sink/sdp.c。
+
+### Round 26（2026-10-31 早晨，真机用户轮运行时观察）
+
+| # | 事实 | 观察 | 我方落点 | 状态 |
+|---|---|---|---|---|
+| F17 | **发送端内容保护的镜像签名**：受保护视频 → 视频帧持续到达但内容黑 + 音频全变 no-data 空标记包（datapkts 涨、real 冻结、decodeErr=0）；退出播放器镜像恢复可见；反复进出后发送端整体停发（idle_timeout） | 会话 faeb830d：真音频仅首个视频 3111 包（15s），09:56:08 起 real 冻结；用户证词与计数器逐点互证；接收端渲染 skip=0 无 crop 命中 | 非接收端缺陷；用户引导走 App 推送通道（Phase 1 判据 6 已证）。乐播对照待确认是否走推送 | ◐ 待 App 名/入口确认 |
+| F18 | **0.4.1 SETUP 泄漏修复真机生效**：95s 会话内 10 次分辨率翻转（≥9 次视频切换），解码器 1 次创建 0 重启，会话存活至用户停止；对照 10-30 每翻即重启/冻结 | mirror_session_end frames=3020 dropped=0 p95=147.8ms | 已落地（60c8581） | ✅ 真机 |
+
+### Round 27（2026-10-31 上午，风暴锤运行时观察）
+
+| # | 事实 | 观察 | 我方落点 | 状态 |
+|---|---|---|---|---|
+| F19 | **同步销毁楔死类**：UxPlay httpd=单线程 select 循环（accept+所有连接读写+全部 RTSP 处理器）；任何 handler 内的 THREAD_JOIN 都可能冻结整栈。镜像工作线程可能在逐帧回调内长时间阻塞（渲染器忙于分辨率翻转） | setup_storm 补丁前 SETUP#2 卡 12s+，用户真机 09:57 后彻底投不上（force-stop 才恢复） | c9f834d 异步 reaper；风暴锤入库为该类缺陷的常驻回归 | ✅ 已修+复验 |
+| F20 | 乐播 stopPrevious 的 dying 语义价值：控制路径零等待——与我方 reaper 设计互证（异步拆旧、立即建新） | F9 运行时日志 + 本轮修复对照 | 已落地 | ✅ |
+| F21 | 栈重启超时→进程自杀升级链 + 启动期网络看门狗误报：churn 场景自愈机制本身脆弱（0.4.0 已有） | 10:33-10:34 三次连环：restart timeout ×2 → process restart ×2；新进程 5s 后 watchdog 误报 | Round 28 候选：重启路径审计 + 看门狗去抖（排除 ConnectivityService 重复 agent 噪音）+ NTP EINVAL 熔断 | 待修 |
+
+### Round 29（2026-10-31 午后，Ghidra+jadx 深挖——用户离开期间自主轮）
+
+| # | 事实 | 来源（~/rea-work / ~/rea-probe/ghidra_proj） | 我方落点 | 状态 |
+|---|---|---|---|---|
+| F22 | **乐播 UX=播放器先行**：点投屏先弹 PlayerView+loading（表面/缓冲就绪）再落流；会话由播放器层管理 | 用户观察 + hpplay-java PlayController/PlayerView 日志 | R28 已修同根问题（表面赛跑）；方向=连接中状态（产品化待办） | ✅ 定性 |
+| F23 | **G4 调参表（本机 SHARP/MStar/API23 全默认）**：nLowlatencyType=0、bResetHard=1、bSupportDropFrame=1、bFlushCache=0、nSpsPpsUsage=0（仅 amlogic<24 给 1）、nFirstFrameOptimizeType=3；旋钮全部支持云端按设备覆写（PlayerConfigBean mpu/md/mr/mffo/mfc）；"sharp" 仅是常量表成员，无任何特殊分支 | jadx `com/hpplay/sdk/sink/a/f.java`（650 行机型矩阵）+ `MirrorPlayer.java` objArr[13] 构造 | **本机无旋钮差可移植**——乐播优势全在会话生命周期与播放器先行，非调参。G4 提取结案 | ✅ |
+| F24 | 乐播 init_decoder 失败重试：等待 500ms×25 轮（≈12.5s 上限，轮询取消旗标）后**再试一次**；mirror_player create 为 Java→原生桥，15 参数由 Java 层传入（参数索引→字段映射已解：[0x12]=playerType…[0x1f]/[0x2e]=全局 getter=bPtsUseMs/音频采样率） | Ghidra FUN_00249000（create）/ FUN_00252e80（init retry）反编译 | 我方 warmup 退避（1/30/60/120/240s）比它更耐心；G2 真解药=R28 表面赛跑修复，非重试节奏 | ✅ 记录 |
+
+## 注入器/环境事实（2026-10-31 晚，R31）
+
+- **F26 镜像线格式（实证）**：128B 头长度/时间戳 **LE**（byteutils 原生读）；VCL payload **BE 4 字节长度前缀**逐 NAL；fmt(0x0100) payload 为 UxPlay 内部布局：`6B 头 + BE short SPS 长 + 裸 SPS + 1B 隔 + BE short PPS 长 + 裸 PPS`，宽高 float 在头 16/20/56/60 号字节（LE）；fmt 时间戳必须与首个 VCL 相同（否则 prepend 丢弃）。fmt 布局错 → 有符号 short 读出负值 → utils_data_to_string 断言 abort。
+- **F27 mid-stream 参数集 = OMX 毒药（实证）**：真实 sender 只在参数集变化时发 fmt；每 GOP 重发 → SPS/PPS 随 VCL 进 OMX → 一帧后 ISE → 170ms 重启风暴（每实例活 1 帧即死）。
+- **F28 电视 wifi churn（实证）**：晚间 ConnectivityService 每约 33s 冒新 network agent；每次首见触发栈重启杀活会话，且可级联超时告警→服务重建。活会话即网络通路健康的证明，网络回调只该作为 idle 栈的恢复钩子。
+- **F29 VDEC 楔死判据**：`MSTAR_VDEC_API [VDEC] Vdec Init Failed!` 批量出现 = 系统级解码器楔死（codec churn 累积），应用层任何耐心/重试均无效，重启电视治。adbd TCP 监听可同死（ping 通 5555 拒）。
+- **F30 JNI 线程退役（Android 6 ART）**：attach 过的原生线程退出时未 detach → 全进程 abort。pthread_key 析构自动 detach 是标准解。
