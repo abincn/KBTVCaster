@@ -57,6 +57,13 @@ class MirrorVideoRenderer {
     private var restartsAllowed = 0
     private var surfaceModeStarves = 0
     private var lastDecoderError: Exception? = null
+    // renderedFrames snapshot at codec start: the F13 init-retry pacing keys
+    // off "this codec instance has rendered nothing" — the renderer-lifetime
+    // counter never resets, so without the snapshot a session that rendered
+    // once ever loses the 500ms gap between failed restarts and hammers the
+    // cold MStar back-to-back (2026-10-31 injector session: one restart per
+    // 170ms, each new instance dying a frame in).
+    @Volatile private var framesAtCodecStart = 0L
 
     // render-side only (feeder thread)
     // volatile: written by the feeder thread, read cross-thread by tests
@@ -109,6 +116,11 @@ class MirrorVideoRenderer {
             if (newSurface == surface) null to null
             else {
                 surface = newSurface
+                // A new surface invalidates the old mode's jam history: reset
+                // the session-sticky degrade so the restart below takes the GL
+                // path on the fresh surface instead of the never-working blit
+                // tier (2026-10-31 auto-launch race lesson).
+                surfaceModeStarves = 0
                 // The codec renders into the Surface it was configured with.
                 stopCodecLocked() to feeder.also { feeder = null }
             }
@@ -311,9 +323,27 @@ class MirrorVideoRenderer {
                         synchronized(lock) { pending.addFirst(nal) }
                         if (starveSinceNs == 0L) starveSinceNs = System.nanoTime()
                         else if (System.nanoTime() - starveSinceNs > STARVE_ABORT_NS) {
-                            throw IllegalStateException(
-                                "decoder offered no input buffer for ${STARVE_ABORT_NS / 1_000_000}ms",
-                            )
+                            if (renderedFrames == 0L) {
+                                // Lebo F25 (2026-10-31): on a cold-boot MStar
+                                // the codec offers no input buffer for a long
+                                // window; their input loop waits indefinitely
+                                // (30s dequeue timeout, retry until session
+                                // stop, "TRY_AGAIN_LATER much times") — the
+                                // loading spinner IS the unlock. Aborting and
+                                // restarting here burned the budget during the
+                                // cold window and degraded the session to the
+                                // never-rendering tier (eternal loading).
+                                if (System.nanoTime() - lastColdWaitLogNs > 5_000_000_000L) {
+                                    lastColdWaitLogNs = System.nanoTime()
+                                    val waitedMs = (System.nanoTime() - starveSinceNs) / 1_000_000
+                                    Timber.i("decoder cold: no input buffer for ${waitedMs}ms — waiting (Lebo F25 patience)")
+                                }
+                                starveSinceNs = System.nanoTime() // keep waiting, no abort
+                            } else {
+                                throw IllegalStateException(
+                                    "decoder offered no input buffer for ${STARVE_ABORT_NS / 1_000_000}ms",
+                                )
+                            }
                         }
                     }
                 }
@@ -337,7 +367,7 @@ class MirrorVideoRenderer {
             } catch (e: Exception) {
                 lastDecoderError = e
                 Timber.e(e, "mirror decoder error after $renderedFrames frames")
-                handleCodecError()
+                handleCodecError(codecRef)
                 return
             }
         }
@@ -345,6 +375,8 @@ class MirrorVideoRenderer {
 
     private var drainProbe = 0
     private var fedProbe = 0
+    // throttles the cold-boot patience log (feeder thread only)
+    private var lastColdWaitLogNs = 0L
     private var skippedBlits = 0L
     // feeder pacing diagnostics (feeder thread only): explains standing-queue
     // latency. deep pending with fast input-wait means output pacing; slow
@@ -468,7 +500,20 @@ class MirrorVideoRenderer {
         }
     }
 
-    private fun handleCodecError() {
+    private fun handleCodecError(failedCodec: MediaCodec?) {
+        // Stale-error guard: setSurface/setResolution/onSession tear the codec
+        // down intentionally mid-session; the exception surfacing in the
+        // feeder a moment later belongs to that retired instance. Counting it
+        // as a surface-mode starve degraded fresh sessions to the never-working
+        // buffer tier (2026-10-31 post-reboot black screen: the auto-launched
+        // Activity's surface arrived mid-session, the swap retired the first
+        // codec, two stale errors → session-sticky bufferMode).
+        synchronized(lock) {
+            if (failedCodec != null && failedCodec !== codec) {
+                Timber.i("ignoring stale decoder error (instance already retired)")
+                return
+            }
+        }
         // Degrade: once the firmware's surface-mode jammed this session,
         // restarts into the same mode burn seconds of black each time. The
         // buffer+blit tier is the proven-working path on this TV.
@@ -492,6 +537,13 @@ class MirrorVideoRenderer {
         teardownCodec(oldCodec)
         if (restartsAllowed > 0) {
             restartsAllowed--
+            // Lebo F13/F24: an init-phase failure (nothing rendered by THIS
+            // codec instance yet) sleeps briefly before the retry instead of
+            // hammering the cold MStar back-to-back ("sleep, and will try
+            // init_decoder again").
+            if (renderedFrames == framesAtCodecStart) {
+                try { Thread.sleep(500) } catch (_: InterruptedException) {}
+            }
             Timber.w("restarting mirror decoder ($restartsAllowed restarts left)")
             synchronized(lock) {
                 queuedAtNs.clear()
@@ -510,6 +562,12 @@ class MirrorVideoRenderer {
                             if (sessionRunning && codec == null && csd0 != null) {
                                 Timber.w("decoder cooldown elapsed — probing restart")
                                 restartsAllowed = 1
+                                // A fresh minute deserves a fresh surface-mode
+                                // chance: the MStar cold-boot refusal yields to
+                                // patience (Lebo retries its init through the
+                                // whole window), so a degrade pinned during the
+                                // cold minutes must not outlive them.
+                                surfaceModeStarves = 0
                                 queuedAtNs.clear()
                                 maybeStartCodecLocked()
                             }
@@ -559,6 +617,7 @@ class MirrorVideoRenderer {
             TraceRecorder.log("mirror_decoder_started", "codec" to c.name, "bufferMode" to bufferMode)
             glDisplay?.setDecodeBufferSize(width, height)
             codec = c
+            framesAtCodecStart = renderedFrames
             val t = Thread({ feederLoop() }, "mirror-feeder").apply { start() }
             feeder = t
             TraceRecorder.log("mirror_codec_started", "w" to width, "h" to height, "codec" to c.name)
@@ -583,10 +642,13 @@ class MirrorVideoRenderer {
                     // DISPLAY surface is attached and the CPU blit tier died
                     // on 1920x1080; DecoderAbTest proved SurfaceTexture+these
                     // keys decode 648/649 frames. GL-forward, blit as fallback.
-                    // Once surface mode starved this session, honor the
-                    // degrade flag — unconditionally resetting it here made
-                    // every restart re-enter the jammed mode (2026-10-25).
-                    if (surfaceModeStarves == 0) {
+                    // Degrade only after TWO genuine surface starves (aligned
+                    // with handleCodecError): one starve is usually the MStar
+                    // cold-boot input refusal, which yields to patience —
+                    // pinning buffer mode on the first strike left cold-boot
+                    // sessions in a tier that never renders here (2026-10-31:
+                    // eternal loading while the iPhone streamed happily).
+                    if (surfaceModeStarves < 2) {
                         bufferMode = false
                         val gd = MirrorGlDisplay(target, width, height)
                         val decodeSurface = try { gd.createDecoderSurface(2000) } catch (e: Exception) { null }
